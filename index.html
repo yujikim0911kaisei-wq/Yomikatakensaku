@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>読み方検索</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    background: #f3f5f8; color: #20242b;
+  }
+  main {
+    width: 100%; max-width: 620px; margin: 24px auto; padding: 24px;
+    background: white; border-radius: 18px; box-shadow: 0 8px 28px #17203312;
+  }
+  h1 { margin: 0 0 8px; font-size: 25px; }
+  .sub { color: #687386; font-size: 14px; line-height: 1.6; margin: 0 0 24px; }
+  label { display: block; font-weight: 700; margin: 18px 0 8px; }
+  input {
+    width: 100%; padding: 14px; font-size: 18px; border: 1px solid #cbd2dc;
+    border-radius: 10px; outline: none; background: #fff;
+  }
+  input:focus { border-color: #4169d8; box-shadow: 0 0 0 3px #4169d81c; }
+  button {
+    width: 100%; margin-top: 12px; padding: 14px; border: 0; border-radius: 10px;
+    background: #315bd6; color: white; font-size: 16px; font-weight: 700;
+  }
+  button:disabled { opacity: .55; }
+  .preview {
+    margin-top: 22px; min-height: 110px; padding: 18px; border-radius: 12px;
+    background: #f5f7fb; border: 1px solid #e2e7ef;
+  }
+  .preview h2 { font-size: 14px; color: #667085; margin: 0 0 12px; }
+  #answer { font-size: 25px; font-weight: 700; overflow-wrap: anywhere; }
+  #detail { color: #687386; font-size: 13px; line-height: 1.6; margin-top: 10px; }
+  .status { color: #687386; font-size: 14px; margin-top: 12px; min-height: 20px; }
+  .result { padding: 12px 0; border-top: 1px solid #e4e8ef; }
+  .result:first-child { border-top: 0; padding-top: 0; }
+  .word { font-weight: 700; font-size: 16px; }
+  .reading { color: #315bd6; font-size: 21px; font-weight: 700; margin-top: 4px; }
+  .meaning { color: #687386; font-size: 13px; margin-top: 4px; line-height: 1.5; }
+  .note { margin-top: 18px; font-size: 12px; color: #87909e; line-height: 1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>読み方検索</h1>
+  <p class="sub">単語を入力すると、辞書データを検索して読み方をプレビューします。</p>
+
+  <label for="word">調べたい単語</label>
+  <input id="word" type="text" placeholder="例：五月雨、相殺、躊躇" autocomplete="off">
+  <button id="searchBtn" type="button">読み方を調べる</button>
+
+  <div class="status" id="status" aria-live="polite">単語を入力して検索してください。</div>
+
+  <section class="preview">
+    <h2>答えのプレビュー</h2>
+    <div id="answer">ここに読み方が表示されます</div>
+    <div id="detail"></div>
+  </section>
+  <div id="results"></div>
+  <p class="note">※ このHTMLはインターネット上の日本語辞書「Jisho.org」を検索します。ChatGPTのような生成AIそのものではありません。通信できない環境や、辞書に登録されていない人名・地名・新語などは調べられない場合があります。</p>
+</main>
+<script>
+const input = document.getElementById('word');
+const button = document.getElementById('searchBtn');
+const statusEl = document.getElementById('status');
+const answerEl = document.getElementById('answer');
+const detailEl = document.getElementById('detail');
+const resultsEl = document.getElementById('results');
+
+function setStatus(text) { statusEl.textContent = text; }
+
+async function searchReading() {
+  const word = input.value.trim();
+  if (!word) {
+    setStatus('単語を入力してください。');
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = '検索中…';
+  answerEl.textContent = '検索しています…';
+  detailEl.textContent = '';
+  resultsEl.innerHTML = '';
+  setStatus('辞書データを検索しています。');
+
+  try {
+    const url = 'https://jisho.org/api/v1/search/words?keyword=' + encodeURIComponent(word);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('検索サービスに接続できませんでした。');
+    const data = await response.json();
+    const entries = data.data || [];
+
+    if (!entries.length) {
+      answerEl.textContent = '読み方が見つかりませんでした';
+      detailEl.textContent = '別の表記で検索するか、単語を短くして試してください。';
+      setStatus('該当する辞書データがありません。');
+      return;
+    }
+
+    const exact = entries.filter(entry =>
+      (entry.japanese || []).some(item => item.word === word || item.reading === word)
+    );
+    const ordered = exact.length ? [...exact, ...entries.filter(e => !exact.includes(e))] : entries;
+    const seen = new Set();
+    const candidates = [];
+
+    for (const entry of ordered) {
+      for (const item of (entry.japanese || [])) {
+        const reading = item.reading || '';
+        if (!reading || seen.has(reading)) continue;
+        seen.add(reading);
+        candidates.push({
+          word: item.word || entry.japanese?.[0]?.word || word,
+          reading,
+          meaning: (entry.senses || []).slice(0, 2)
+            .map(s => (s.english_definitions || []).slice(0, 3).join('、'))
+            .filter(Boolean).join(' / ')
+        });
+      }
+    }
+
+    if (!candidates.length) {
+      answerEl.textContent = '読み方を取得できませんでした';
+      setStatus('辞書データに読み仮名がありませんでした。');
+      return;
+    }
+
+    answerEl.textContent = candidates[0].reading;
+    detailEl.textContent = candidates.length > 1
+      ? '複数の読み方が見つかりました。下の候補も確認してください。'
+      : (candidates[0].meaning || '辞書に登録されている読み方です。');
+
+    resultsEl.innerHTML = '<div class="note" style="font-weight:700;color:#687386;margin:18px 0 8px">検索結果</div>';
+    candidates.slice(0, 8).forEach((item, index) => {
+      const div = document.createElement('div');
+      div.className = 'result';
+      const wordDiv = document.createElement('div');
+      wordDiv.className = 'word';
+      wordDiv.textContent = item.word;
+      const readingDiv = document.createElement('div');
+      readingDiv.className = 'reading';
+      readingDiv.textContent = item.reading;
+      const meaningDiv = document.createElement('div');
+      meaningDiv.className = 'meaning';
+      meaningDiv.textContent = item.meaning;
+      div.append(wordDiv, readingDiv, meaningDiv);
+      div.addEventListener('click', () => {
+        answerEl.textContent = item.reading;
+        detailEl.textContent = item.meaning || '選択した読み方';
+      });
+      div.style.cursor = 'pointer';
+      resultsEl.appendChild(div);
+    });
+    setStatus(`${candidates.length}件の読み方候補が見つかりました。候補をタップするとプレビューに反映されます。`);
+  } catch (error) {
+    answerEl.textContent = '検索できませんでした';
+    detailEl.textContent = 'インターネット接続を確認して、もう一度お試しください。';
+    setStatus(error.message || '通信エラーが発生しました。');
+  } finally {
+    button.disabled = false;
+    button.textContent = '読み方を調べる';
+  }
+}
+
+button.addEventListener('click', searchReading);
+input.addEventListener('keydown', event => {
+  if (event.key === 'Enter') searchReading();
+});
+</script>
+</body>
+</html>
